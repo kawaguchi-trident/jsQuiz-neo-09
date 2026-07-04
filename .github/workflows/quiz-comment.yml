@@ -1,0 +1,82 @@
+name: Quiz 結果コメント
+
+on:
+  workflow_run:
+    workflows: ['Quiz 自動判定']
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  issues: write
+  actions: read
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.event == 'pull_request'
+
+    steps:
+      - name: Artifact をダウンロード
+        uses: actions/download-artifact@v4
+        with:
+          name: quiz-result
+          path: quiz-result
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 結果を読み取り
+        id: read
+        run: |
+          echo "pr_number=$(cat quiz-result/pr_number.txt)" >> "$GITHUB_OUTPUT"
+          echo "student_file=$(cat quiz-result/student_file.txt)" >> "$GITHUB_OUTPUT"
+          echo "result=$(cat quiz-result/result.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: PR にコメントを投稿
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt('${{ steps.read.outputs.pr_number }}', 10);
+            const file = '${{ steps.read.outputs.student_file }}';
+            const result = '${{ steps.read.outputs.result }}';
+
+            if (!prNumber) {
+              core.setFailed(`PR番号が取得できませんでした: "${prNumber}"`);
+              return;
+            }
+
+            let body;
+            if (result === 'passed') {
+              body = [
+                '## ✅ 合格！',
+                '',
+                `**${file}** の分割代入と \`map\` によるメニュー描画が正しく動きました。`,
+                'お疲れ様でした！',
+              ].join('\n');
+            } else if (result === 'no_file') {
+              body = [
+                '## ⚠️ ファイルが見つかりません',
+                '',
+                '`students/{番号}/index.html` が変更されていません。',
+                '正しいフォルダに解答を置いてから、再度 push してください。',
+              ].join('\n');
+            } else {
+              body = [
+                '## ❌ 不合格',
+                '',
+                `**${file}** のメニュー描画が期待通りに動きませんでした。`,
+                '',
+                '**確認ポイント**',
+                '- `renderMenu` の `return \'\'` を、テンプレートリテラル `<li>${emoji} ${name}：${price}円</li>` の `return` に書き換えましたか？（コロンは全角の `：`、全体をバッククォート ` で囲む。シングルクォートのままだと `${name}` が展開されません）',
+                '- 用意済みの骨組み（`const [name, price, emoji] = item` の分割代入・`map`・`join(\'\')`）を書き換えていませんか？（`join()` の引数を消すとカンマが表示されます）',
+                '- 用意済みの `menu` データ・ボタン処理を書き換えたり、宣言し直したりしていませんか？',
+                '',
+                'コードを修正して再度 push してください。',
+              ].join('\n');
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body,
+            });

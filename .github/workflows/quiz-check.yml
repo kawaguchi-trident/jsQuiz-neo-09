@@ -1,0 +1,74 @@
+name: Quiz 自動判定
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 変更された students ファイルを検出
+        id: find
+        run: |
+          CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }} \
+            | grep '^students/[0-9]\+/index\.html' | head -1)
+          echo "student_file=$CHANGED" >> "$GITHUB_OUTPUT"
+          if [ -z "$CHANGED" ]; then
+            echo "::warning::students/{番号}/index.html が見つかりません。"
+          else
+            echo "対象ファイル: $CHANGED"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.find.outputs.student_file != ''
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        if: steps.find.outputs.student_file != ''
+        run: |
+          npm install -D @playwright/test
+          npx playwright install chromium --with-deps
+
+      - name: Run quiz test
+        id: quiz
+        if: steps.find.outputs.student_file != ''
+        continue-on-error: true
+        env:
+          STUDENT_FILE: ${{ steps.find.outputs.student_file }}
+        run: npx playwright test
+
+      - name: 結果を artifact に書き出し
+        if: always()
+        run: |
+          mkdir -p quiz-result
+          echo "${{ github.event.pull_request.number }}" > quiz-result/pr_number.txt
+          echo "${{ steps.find.outputs.student_file }}" > quiz-result/student_file.txt
+          if [ -z "${{ steps.find.outputs.student_file }}" ]; then
+            echo "no_file" > quiz-result/result.txt
+          elif [ "${{ steps.quiz.outcome }}" = "success" ]; then
+            echo "passed" > quiz-result/result.txt
+          else
+            echo "failed" > quiz-result/result.txt
+          fi
+
+      - name: Artifact をアップロード
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiz-result
+          path: quiz-result/
+          retention-days: 1
+
+      - name: PR ステータスに合否を反映
+        if: steps.find.outputs.student_file == '' || steps.quiz.outcome == 'failure'
+        run: exit 1
